@@ -8,3 +8,5 @@ use [[this tty REPL|https://github.com/gdanov/nodeserial]] to push the code
 ## wiring
 
 remember to use 5v for the sensor. Add capacitor to the 3.3v rail to stabilize when plugged in usb port
+
+test
