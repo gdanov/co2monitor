@@ -325,10 +325,11 @@ SSD1680.prototype.update = function () {
 };
 
 SSD1680.prototype.sendBuff = function (buff) {
-  const step = 1024;
+  /*  const step = 1024; // set experimentally on ESP32
   for (i = 0; i < buff.length; i += step) {
     this.sd(buff.slice(i, i + step));
-  }
+		} */
+  this.sd(buff);
 };
 
 /**
@@ -340,8 +341,6 @@ SSD1680.prototype.sendBuff = function (buff) {
  */
 SSD1680.prototype.doDisplay = function (bwBuffer, rbBuffer) {
   // see https://github.com/wemos/LOLIN_EPD_Library/blob/100a6c8bd1dedd6768aa06faa5ae6e5fbc3ca67e/src/LOLIN_SSD1680.cpp#L119
-
-  //this.scd(0x24, this.bw_buff);
   console.log('--display');
 
   // set X & Y RAM counters
@@ -353,6 +352,7 @@ SSD1680.prototype.doDisplay = function (bwBuffer, rbBuffer) {
   //this.scd(0x24, bwBuffer);
   this.sc(0x24);
   this.sendBuff(bwBuffer);
+
   this.sc(0x26);
   this.sendBuff(rbBuffer);
   //  this.scd(0x26, rbBuffer);
@@ -373,26 +373,50 @@ SSD1680.prototype.doDisplay = function (bwBuffer, rbBuffer) {
  */
 SSD1680.prototype.grfx = function () {
   var _display = this;
-  var g = Graphics.createArrayBuffer(this.display.displaySizeX, this.display.displaySizeY, this.display.bpp, {
+
+  var gw = Graphics.createArrayBuffer(this.display.displaySizeX, this.display.displaySizeY, 1, {
+    msb: true // <-- nominal
+  });
+  var gr = Graphics.createArrayBuffer(this.display.displaySizeX, this.display.displaySizeY, 1, {
     msb: true // <-- nominal
   });
 
+  //gw.setRotation(3, true);
+  //gr.setRotation(3, true);
+
+  var g = Graphics.createCallback(this.display.displaySizeX, this.display.displaySizeY, 24, {
+    setPixel: function (x, y, col) {
+      let rc = (col & 0xff0000) >> 16,
+        wc = ((col & 0x00ff00) >> 8) | (col & 0x0000ff);
+      rc = rc & ~wc;
+
+      //console.log('-p-', x, y, col, rc, wc);
+      gw.setPixel(x, y, wc * 0xffff);
+      gr.setPixel(x, y, rc * 0xffff);
+    },
+    fillRect: function (x, y, xx, yy, col) {
+      let rc = (col & 0xff0000) >> 16,
+        wc = ((col & 0x00ff00) >> 8) | (col & 0x0000ff);
+      rc = rc & ~wc;
+      gw.setColor(wc);
+      gw.fillRect(x, y, xx, yy);
+      gr.setColor(rc);
+      gr.fillRect(x, y, xx, yy);
+    }
+  });
+
+  // TODO seems to be not the standard signature
   g.clear = function (clearColor) {
-    new Uint8Array(this.buffer).fill(
-      255
-      //	clearColor
-    );
-    //display
-    //delay(100)
-    //display()
+    new Uint8Array(this.buffer).fill(clearColor);
+    this.flip();
   };
 
   g.flip = function () {
-    _display.doDisplay(
-      new Uint8Array(this.buffer),
-      new Uint8Array(this.buffer).map((v) => ~v)
-    );
+    //    _display.doDisplay(new Uint8Array(this.buffer));
+    _display.doDisplay(new Uint8Array(gw.buffer), new Uint8Array(gr.buffer));
+    //console.log('--flip--', gw.buffer);
   };
+
   return g;
 };
 /**
@@ -408,11 +432,11 @@ SPI2.setup({ sck: D18, mosi: D23 });
 
 let g = new SSD1680({
   display: {
-    bpp: 1,
+    bpp: 2,
+    // TODO padding, etc.
     displaySizeX: 128,
     displaySizeY: 250,
-    //displaySizeX: 250,
-    //displaySizeY: 122,
+
     maxScreenBytes: 3096,
     ramXStartAddress: 0x00,
     ramXEndAddress: 0x11,
@@ -430,18 +454,31 @@ let g = new SSD1680({
 console.log('set-up');
 
 g.init();
+
 console.log('######################################');
-//g.doDisplay();
+
 let grfx = g.grfx();
 // retotaion, mirror, msb and cmd 0x11 decide how the picture will be flipped & padded
 grfx.setRotation(3, true); // <-- nominal
 
-grfx.clear();
+//grfx.clear(255);
+
+grfx.setBgColor(1, 1, 1);
+grfx.clearRect(0, 0, 250, 121);
+
+grfx.setColor(0, 0, 0);
+grfx.drawLine(0, 0, 10, 0);
+
+grfx.setColor(1, 0, 0);
+grfx.drawLine(0, 0, 10, 0);
+
 grfx.setColor(0, 0, 0);
 
 grfx.drawLine(0, 0, 121, 121);
 
 grfx.drawLine(0, 0, 10, 0);
+
+grfx.setColor(1, 0, 0);
 grfx.drawLine(0, 0, 0, 10);
 
 grfx.drawLine(121, 121, 111, 121);
@@ -452,8 +489,13 @@ grfx.drawCircle(50, 50, 40);
 
 grfx.drawLine(249, 0, 249, 121);
 
-grfx.flip();
+grfx.setColor(0, 0, 0);
+grfx.setFont('Vector:24');
+grfx.drawString('128', 110, 10, true);
 
-//g.doDisplay();
+grfx.setColor(1, 0, 0);
+grfx.drawString('759', 180, 10, true);
+
+grfx.flip();
 
 console.log('done');
