@@ -35,6 +35,9 @@ var C = {
     ramYEndAddress: 0xab
   }
 };
+
+const XAddrPadding = 1;
+
 /**
  * Represents an SSD1606 Display Driver with Controller.
  * All functions are based on spefication version 1.1 from 10/2011.
@@ -80,10 +83,15 @@ function SSD1680(config) {
     this.hwResetTimeOut = 100;
   }
 
-  this.testBuff = new Uint8ClampedArray((this.display.displaySizeX * this.display.displaySizeY) / 8) //
-    .fill(0xcc);
-  //.map((_v, i) => i % 2);
-  this.testBuff2 = this.testBuff.map((v) => ~v);
+  //  this.testBuff = new Uint8ClampedArray(
+  //	(this.display.displaySizeX * this.display.displaySizeY) / 8
+  //  (250 * 122) / 8
+  //) //
+  //.fill(0x01); // 0xcc
+  //.map((_v, i) => i % 122);
+  //.map((_, i) => (i % 2) * 255);
+
+  //  this.testBuff2 = this.testBuff.map((v) => ~v);
 
   console.log('config:', this);
 }
@@ -165,28 +173,25 @@ SSD1680.prototype.init = function (callback, options) {
   this.busyWait();
 
   // driver output control
-  this.scd(0x01, [0xf9, 0x00, 0x00]); //Driver output control
+  this.scd(0x01, [0xf9, 0x00, 0x00]); //Driver output control [ lines-1 ,,
 
   // data entry mode
-  this.scd(0x11, 0x01);
+  this.scd(0x11, 0x01); // <-- nominal
 
-  //set Ram-X address start/end position
-  this.scd(0x44, [0x00, 0x0e]); //0x0F-->(15+1)*8=128
-  //set Ram-Y address start/end position
-  this.scd(0x45, [0xf9, 0x00, 0x00, 0x00]); //0xF9-->(249+1)=250
+  // X is the shorter dimension, it's rotated 90 degree
+  // set Ram-X address start/end position in (height/8 - 1)
+  // start = 1 ?
+  this.scd(0x44, [XAddrPadding, 128 / 8 - 1 + XAddrPadding]); //0x0F-->(15+1)*8=128 // this.display.displaySizeX / 8 - 1
+  //set Ram-Y address start/end position, in reverse, zelo-based?
+  this.scd(0x45, [250 - 1, 0x00, 0x00, 0x00]); //0xF9-->(249+1)=250  // 250/8 => 0x1F // 250-1=0xF9
   //BorderWavefrom
   this.scd(0x3c, 0x05);
   // Select built-in temperature sensor
-  this.scd(0x18, 0x80);
+  //this.scd(0x18, 0x80);
   //let temp = this.scd(0x1a);
   //console.log('== TEMP', temp);
   //  Display update control
   this.scd(0x21, [0x00, 0x00]);
-  // set RAM x address count to 0;
-  this.scd(0x4e, 0x00);
-  // set RAM y address count to 0X199;
-  this.scd(0x4f, [0xf9, 0x00]);
-
   this.busyWait();
 
   console.log('--init over');
@@ -312,12 +317,20 @@ SSD1680.prototype.update = function () {
   // see https://github.com/wemos/LOLIN_EPD_Library/blob/100a6c8bd1dedd6768aa06faa5ae6e5fbc3ca67e/src/LOLIN_SSD1680.cpp#L138
   console.log('--update');
 
-  this.scd(0x22, 0xf7); //Display Update Control
+  this.scd(0x22, 0xf7); //Display Update Control, was f7
   this.sc(0x20); //Activate Display Update Sequence
   this.busyWait();
 
   console.log('--update over');
 };
+
+SSD1680.prototype.sendBuff = function (buff) {
+  const step = 1024;
+  for (i = 0; i < buff.length; i += step) {
+    this.sd(buff.slice(i, i + step));
+  }
+};
+
 /**
  * writes out the buffers
  *
@@ -325,15 +338,24 @@ SSD1680.prototype.update = function () {
  * @param {number} xCount - X RAM counter
  * @param {number} yCount - Y RAM counter
  */
-SSD1680.prototype.doDisplay = function (xCount, yCount) {
+SSD1680.prototype.doDisplay = function (bwBuffer, rbBuffer) {
   // see https://github.com/wemos/LOLIN_EPD_Library/blob/100a6c8bd1dedd6768aa06faa5ae6e5fbc3ca67e/src/LOLIN_SSD1680.cpp#L119
 
   //this.scd(0x24, this.bw_buff);
   console.log('--display');
 
-  this.scd(0x24, this.testBuff);
-
-  this.scd(0x26, this.testBuff2);
+  // set X & Y RAM counters
+  this.scd(0x4e, XAddrPadding);
+  // Y needs to be +1 ???
+  this.scd(0x4f, [250 - 1, 0x00]);
+  this.busyWait();
+  // write in RAM
+  //this.scd(0x24, bwBuffer);
+  this.sc(0x24);
+  this.sendBuff(bwBuffer);
+  this.sc(0x26);
+  this.sendBuff(rbBuffer);
+  //  this.scd(0x26, rbBuffer);
 
   this.update();
 
@@ -352,20 +374,24 @@ SSD1680.prototype.doDisplay = function (xCount, yCount) {
 SSD1680.prototype.grfx = function () {
   var _display = this;
   var g = Graphics.createArrayBuffer(this.display.displaySizeX, this.display.displaySizeY, this.display.bpp, {
-    msb: true
+    msb: true // <-- nominal
   });
 
   g.clear = function (clearColor) {
-    new Uint8Array(this.buffer).fill(clearColor);
+    new Uint8Array(this.buffer).fill(
+      255
+      //	clearColor
+    );
     //display
     //delay(100)
     //display()
   };
 
   g.flip = function () {
-    _display.doDisplay(0, 0);
-    _display.scd(0x24, this.buffer);
-    _display.sc(0xff);
+    _display.doDisplay(
+      new Uint8Array(this.buffer),
+      new Uint8Array(this.buffer).map((v) => ~v)
+    );
   };
   return g;
 };
@@ -382,9 +408,11 @@ SPI2.setup({ sck: D18, mosi: D23 });
 
 let g = new SSD1680({
   display: {
-    bpp: 2,
-    displaySizeX: 122,
+    bpp: 1,
+    displaySizeX: 128,
     displaySizeY: 250,
+    //displaySizeX: 250,
+    //displaySizeY: 122,
     maxScreenBytes: 3096,
     ramXStartAddress: 0x00,
     ramXEndAddress: 0x11,
@@ -403,7 +431,28 @@ console.log('set-up');
 
 g.init();
 console.log('######################################');
-g.doDisplay();
+//g.doDisplay();
+let grfx = g.grfx();
+// retotaion, mirror, msb and cmd 0x11 decide how the picture will be flipped & padded
+grfx.setRotation(3, true); // <-- nominal
+
+grfx.clear();
+grfx.setColor(0, 0, 0);
+
+grfx.drawLine(0, 0, 121, 121);
+
+grfx.drawLine(0, 0, 10, 0);
+grfx.drawLine(0, 0, 0, 10);
+
+grfx.drawLine(121, 121, 111, 121);
+grfx.drawLine(121, 121, 121, 111);
+
+grfx.drawLine(0, 50, 50, 50);
+grfx.drawCircle(50, 50, 40);
+
+grfx.drawLine(249, 0, 249, 121);
+
+grfx.flip();
 
 //g.doDisplay();
 
