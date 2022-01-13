@@ -1,3 +1,4 @@
+// huge credit goes to https://benkrasnow.blogspot.com/2017/10/fast-partial-refresh-on-42-e-paper.html
 // see //#define GxEPD2_DRIVER_CLASS GxEPD2_290_C90c // GDEM029C90  128x296, SSD1680
 // https://v4.cecdn.yun300.cn/100001_1909185148/GDEM029C90.pdf page 30
 // https://github.com/ZinggJM/GxEPD2/blob/master/src/epd3c/GxEPD2_290_C90c.h
@@ -39,17 +40,6 @@ var C = {
 const XAddrPadding = 1;
 
 /**
- * Represents an SSD1606 Display Driver with Controller.
- * All functions are based on spefication version 1.1 from 10/2011.
- * Informations:
- * <ul>
- * <li>The display controller provides up to 180/128/4=5580 bytes of display buffer RAM.</li>
- * <li>Works only with SPI 4-wire mode with using a D/C (data/command) pin.</li>
- * <li>If you provide the BS1 pin the module will handle the correct SPI mode setting.</li>
- * <li>For some future-proof you can set up the clearScreenTimeOut and hardwareResetTimeOut.</li>
- * </ul>
- * @constructor
- * @param config - configuration with displayType, SPI and additional pins.
  */
 function SSD1680(config) {
   if (config.displayType === 'GDE021A1') {
@@ -83,16 +73,6 @@ function SSD1680(config) {
     this.hwResetTimeOut = 100;
   }
 
-  //  this.testBuff = new Uint8ClampedArray(
-  //	(this.display.displaySizeX * this.display.displaySizeY) / 8
-  //  (250 * 122) / 8
-  //) //
-  //.fill(0x01); // 0xcc
-  //.map((_v, i) => i % 122);
-  //.map((_, i) => (i % 2) * 255);
-
-  //  this.testBuff2 = this.testBuff.map((v) => ~v);
-
   console.log('config:', this);
 }
 
@@ -119,16 +99,7 @@ SSD1680.prototype.off = function () {
 SSD1680.prototype.hwReset = function (callback) {
   // see https://github.com/wemos/LOLIN_EPD_Library/blob/100a6c8bd1dedd6768aa06faa5ae6e5fbc3ca67e/src/LOLIN_EPD.cpp#L75
   digitalWrite(this.cs1Pin, 1);
-  /*
-		digitalWrite(rst, HIGH);
-    delay(1);
-    // bring reset low
-    digitalWrite(rst, LOW);
-    // wait 10ms
-    delay(10);
-    // bring out of reset
-    digitalWrite(rst, HIGH);
-	 */
+  // sequence timing is extremely sensitive
   digitalPulse(this.resetPin, 1, [1, 10]);
   digitalWrite(this.resetPin, 1);
 
@@ -147,6 +118,7 @@ SSD1680.prototype.busyWait = function () {
   while (digitalRead(this.busyPin)) {
     i++;
     if (i > 9000) {
+      // 9000 ~ 17 seconds
       cancelled = true;
       break;
     }
@@ -160,15 +132,52 @@ SSD1680.prototype.busyWait = function () {
 
 // see https://github.com/ZinggJM/GxEPD2/blob/719fbde26bdb2b73b1b81d25641bbe0d167564b9/src/epd/GxEPD2_290_T94_V2.cpp#L361
 // fast/partial update works only when color is RED but the output is actually black :)
+// see https://www.waveshare.net/datasheet/SSD_PDF/SSD1680.pdf sections 6.5-6.7
+// prettier-ignore
 const waveLut = [
-  0x0, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x80, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-  0x0, 0x40, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0a, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0x1, 0x0,
-  0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x0, 0x0, 0x0
-];
+	// L0 black 0x40 => 0b01000000
+	0x40, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+	// L1 white 0x80 => 0b10000000
+	0x80, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+	// L2 red using 0b11 for VS is the trick
+	//0x40, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 
+	// the 3rd phase is the important one
+	// black -> red is hard
+	0x80, 0xFF, 0xFF, 0 ,0 ,0 , 0, 0, 0, 0, 0, 0, //
+	// L3 = L2 !!! but currently not used hopefully
+	0, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,//
+	// L4 ??
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,//
+	// 60 Phase 0 TP[0A] TP[0B] SR[0AB] TP[0C] TP[0D] SR[0CD] RP[0]
+	0x04, 0, 0, 0, 0, 0, 0x1,//
+	// 67 Phase 1
+	0x0A, 0, 0, 0, 0, 0, 2,//
+	// 74 Phase 2
+	//0x1, 0, 0, 0, 0, 0, 0,// original
+	// stress on phase #3 because I rely on it for RED and it requires more time to pop up
+	0x0A, 0x0A, 0 ,0x0A, 0x0A, 2 , 0x02,//
+	// 81 Phase 3
+	0, 0, 0, 0, 0, 0, 0,//
+	// 88 Phase 4
+	0, 0, 0, 0, 0, 0, 0,//
+	// 95 Phase 5
+	0, 0, 0, 0, 0, 0, 0,//
+	// 102 Phase 6
+	0, 0, 0, 0, 0, 0, 0,//
+	// 109 Phase 7
+	0, 0, 0, 0, 0, 0, 0,//
+	// 116 Phase 8
+	0, 0, 0, 0, 0, 0, 0,//
+	// 123 Phase 9
+	0, 0, 0, 0, 0, 0, 0,//
+	// 130 Phase 10
+	0, 0, 0, 0, 0, 0, 0,//
+	// 137 Phase 11
+	0, 0, 0, 0, 0, 0, 0,//
+	// 144 FR[0 - 11]
+	0x22, 0x22, 0x22, 0x22, 0x22, 0x22
+	// 150
+	, 0, 0, 0];
 
 /**
  * Initialize display.
@@ -226,19 +235,6 @@ SSD1680.prototype.init = function (callback, options) {
  * @param {number} command - a command
  */
 SSD1680.prototype.sc = function (command) {
-  /*
-		void LOLIN_EPD::sendCmd(uint8_t c)
-		{
-		// SPI
-		csHigh();
-		dcLow();
-		csLow();
-
-		uint8_t data = fastSPIwrite(c);
-
-		csHigh();
-		}
-	 */
   digitalWrite(this.cs1Pin, 1);
   digitalWrite(this.dcPin, 0);
   // last arg is NSS pin, low -> write -> high
@@ -465,6 +461,9 @@ let g = new SSD1680({
   powerPin: null
 });
 
+//digitalWrite(D15, 0);
+//digitalWrite(D15, 0);
+
 console.log('set-up');
 
 g.init();
@@ -477,44 +476,162 @@ grfx.setRotation(3, true); // <-- nominal
 
 //grfx.clear(255);
 
-grfx.setBgColor(1, 1, 1);
-grfx.clearRect(0, 0, 250, 121);
+function demo() {
+  grfx.setBgColor(1, 1, 1);
+  grfx.clearRect(0, 0, 250, 121);
 
-grfx.setColor(0, 0, 0);
-grfx.drawLine(0, 0, 10, 0);
+  grfx.setColor(0, 0, 0);
+  grfx.drawLine(0, 0, 10, 0);
 
-grfx.setColor(1, 0, 0);
-grfx.drawLine(0, 0, 10, 0);
+  //grfx.setColor(1, 0, 0);
+  grfx.drawLine(0, 0, 10, 0);
 
-grfx.setColor(0, 0, 0);
+  grfx.setColor(0, 0, 0);
 
-grfx.drawLine(0, 0, 121, 121);
+  grfx.drawLine(0, 0, 121, 121);
 
-grfx.drawLine(0, 0, 10, 0);
+  grfx.drawLine(0, 0, 10, 0);
 
-grfx.setColor(1, 0, 0);
-grfx.drawLine(0, 0, 0, 10);
+  //grfx.setColor(1, 0, 0);
+  grfx.drawLine(0, 0, 0, 10);
 
-grfx.drawLine(121, 121, 111, 121);
-grfx.drawLine(121, 121, 121, 111);
+  grfx.drawLine(121, 121, 111, 121);
+  grfx.drawLine(121, 121, 121, 111);
 
-grfx.drawLine(0, 50, 50, 50);
-grfx.drawCircle(50, 50, 40);
+  grfx.drawLine(0, 50, 50, 50);
+  grfx.drawCircle(50, 50, 40);
 
-grfx.drawLine(249, 0, 249, 121);
+  grfx.drawLine(249, 0, 249, 121);
 
-grfx.setColor(0, 0, 0);
-grfx.setFont('Vector:24');
-grfx.drawString('127', 110, 10, true);
+  grfx.setColor(0, 0, 0);
+  grfx.setFont('Vector:24');
+  grfx.drawString('BLK', 110, 10, true);
 
-grfx.setColor(1, 0, 0);
-grfx.drawString('752', 180, 10, true);
+  //grfx.flip(); // needed for the red bellow? can't mix colours in one flip?
 
-grfx.flip();
+  grfx.setColor(1, 0, 0);
+  grfx.drawString('RED', 180, 10, true);
 
-grfx.drawString('341', 180, 50, true);
-grfx.flip();
+  grfx.flip();
 
-console.log('done');
+  grfx.drawString('RED', 180, 50, true);
+  grfx.flip();
 
-// [1,2,3,4,5,6,7,8,9].map(v=> grfx.drawString('34'+v, 110, 50, true).flip())
+  // [1,2,3,4,5,6,7,8,9].map(v=> grfx.drawString('34'+v, 110, 50, true).flip())
+  for (i = 0; i < 10; i += 3) {
+    grfx.setColor(1, 0, 0);
+    grfx.drawString('' + i, 110, 50, true);
+    grfx.setColor(0, 0, 0);
+    grfx.drawString('' + i, 110, 10, true);
+
+    grfx.flip();
+  }
+  console.log('== demo over ==');
+}
+
+console.log('== done ==');
+
+// *******************
+function dumpInHex(arr) {
+  return arr
+    .split('')
+    .map((i) => i.charCodeAt(0).toString(16))
+    .join(' ');
+}
+
+function MHgetCheckSum(packet) {
+  let i,
+    checksum = 0;
+  for (i = 1; i < 8; i++) {
+    checksum += packet[i];
+  }
+  checksum = 0xff - checksum;
+  checksum += 1;
+  return checksum;
+}
+
+function MHCommand(bytes) {
+  let ret = [0xff].concat(bytes.slice(0, 7));
+  return ret.concat([MHgetCheckSum(ret)]);
+}
+
+const mh_get_ppm = MHCommand([0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00]);
+const mh_get_raw = MHCommand([0x01, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00]);
+const mh_no_abc = MHCommand([0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+Serial2.setup(9600, { tx: D12, rx: D13 });
+// disable ABC
+//Serial2.write(mh_no_abc);
+//Serial2.write(mh_get_ppm);
+
+var ppm = 0;
+var counter = 0;
+
+let stopBtn = 0,
+  stop = false;
+
+Serial2.on('data', function (data) {
+  console.log('Serial2: ', dumpInHex(data), 'ppm:', data.charCodeAt(2) * 256 + data.charCodeAt(3));
+
+  if (data.charCodeAt(1) == 0x86) {
+    ppm = data.charCodeAt(2) * 256 + data.charCodeAt(3);
+    //    g.drawString(ppm + '', 2, 15, true);
+    //  g.flip();
+
+    // TODO maybe hwreset is enough, but why not...
+    g.init();
+
+    console.log('-- set color --');
+    grfx.setBgColor(0xffff);
+    grfx.clearRect(0, 0, 249, 121);
+    grfx.setColor(0);
+    grfx.setFont('Vector:48');
+    grfx.drawString(ppm, 65, 40, true);
+    grfx.setFont('Vector:12');
+    grfx.drawString(counter++, 10, 109, true);
+    grfx.flip();
+
+    if (!stop) {
+      console.log('sleeping ................');
+      // display deep sleep
+      g.scd(0x10, 0);
+      ESP32.deepSleep(30 * 1000 * 1000);
+    }
+  } else {
+    Serial2.write(mh_get_ppm);
+  }
+});
+
+// *******************
+
+E.on('init', () => {
+  console.log('**** on init ****');
+
+  analogWrite(D5, 0.95); // reverse - zero is brightest
+  // not sure if this helps
+  //digitalWrite(D15, 0);
+  // save() !!!
+  stop = false;
+  stopBtn = 0;
+  for (i = 0; i < 100; i++) {
+    stopBtn += analogRead(D34);
+  }
+  stopBtn = stopBtn / 100;
+
+  if (stopBtn < 0.25) {
+    stop = true;
+    console.log('== stop button detected, stopping ==', stopBtn);
+    digitalWrite(D5, 0);
+  } else {
+    console.log('== no stop button, loop  ==', stopBtn);
+    //
+    //g.hwReset(); // redundant
+
+    //Serial2.setup(9600, { tx: D12, rx: D13 });
+    console.log('-- measure --');
+    // triggers measurement
+    Serial2.write(mh_no_abc);
+  }
+});
+
+// for(i=0;i<10000;i++){ console.log(analogRead(D34)) }
